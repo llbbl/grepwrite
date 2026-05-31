@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.6] - 2026-05-31
+
+### Features
+
+- **mutate:** Add dry-run rewrite with template substitution
 ## [0.0.5] - 2026-05-31
 
 ### Features
