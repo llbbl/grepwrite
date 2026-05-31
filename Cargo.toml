@@ -1,6 +1,6 @@
 [package]
 name = "grepwrite"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 rust-version = "1.85"
 description = "Ripgrep-style search plus safe, transactional, AST-aware rewrites with built-in undo. Designed for LLM coding agents."

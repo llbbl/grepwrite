@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.3] - 2026-05-31
+
+### Features
+
+- **output:** Add caveman formatter and wire gw find end-to-end
 ## [0.0.2] - 2026-05-31
 
 ### Features
