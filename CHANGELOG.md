@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.4] - 2026-05-31
+
+### Documentation
+
+- Credit JuliusBrussee/caveman for the caveman format name
 ## [0.0.3] - 2026-05-31
 
 ### Features
