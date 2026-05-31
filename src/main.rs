@@ -5,7 +5,7 @@ mod cli;
 
 use cli::{Cli, Command, FindArgs, FindOutputFormat, RewriteArgs, RewriteOutputFormat, UndoArgs};
 use grepwrite::errors::GwError;
-use grepwrite::locate::{Locate, Query, rg::RgLocator};
+use grepwrite::locate::{Locate, Match, Query, ast_grep::AstGrepLocator, rg::RgLocator};
 use grepwrite::mutate::{
     apply_edits, group_matches_by_path, plan_edits_for_file, write_file_atomic,
 };
@@ -36,6 +36,16 @@ fn dispatch(cli: Cli) -> Result<i32, GwError> {
     }
 }
 
+/// Pick the locate engine. `--in <scope>` switches to ast-grep; otherwise
+/// the default rg path is unchanged.
+fn locate(query: &Query) -> Result<Vec<Match>, GwError> {
+    if query.in_scope.is_some() {
+        AstGrepLocator.run(query)
+    } else {
+        RgLocator.run(query)
+    }
+}
+
 fn run_find(args: FindArgs) -> Result<i32, GwError> {
     let query = Query {
         pattern: args.pattern,
@@ -48,7 +58,7 @@ fn run_find(args: FindArgs) -> Result<i32, GwError> {
         no_ignore: args.no_ignore,
     };
 
-    let matches = RgLocator.run(&query)?;
+    let matches = locate(&query)?;
 
     match args.output {
         FindOutputFormat::Caveman => {
@@ -96,7 +106,7 @@ fn run_rewrite(args: RewriteArgs) -> Result<i32, GwError> {
         no_ignore: false,
     };
 
-    let matches = RgLocator.run(&query)?;
+    let matches = locate(&query)?;
 
     if args.apply {
         run_rewrite_apply(args, &pattern, &matches)
