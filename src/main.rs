@@ -2,7 +2,6 @@ use clap::Parser;
 use std::process::ExitCode;
 
 mod cli;
-mod snapshot;
 
 use cli::{Cli, Command, FindArgs, FindOutputFormat, RewriteArgs, RewriteOutputFormat};
 use grepwrite::errors::GwError;

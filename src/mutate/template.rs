@@ -1,10 +1,10 @@
 //! Capture-group substitution for `gw rewrite`.
 //!
-//! `gw` owns capture substitution (per `_/decisions.md` D3) rather than
-//! delegating to rg / ast-grep — the engines either don't provide captures in
-//! their JSON event stream (rg) or wouldn't get the unified `$1` / `${name}`
-//! / `$$` / `$0` surface for free. Keeping it here also means the parser is a
-//! single, tested chokepoint independent of the locator.
+//! Capture-group substitution is owned by `gw`, not delegated to the regex
+//! engine. The underlying locators either don't surface captures in their
+//! JSON event stream (rg) or don't share a unified `$1` / `${name}` / `$$` /
+//! `$0` surface. Owning it here keeps the parser a single, tested chokepoint
+//! independent of the locator.
 
 use crate::errors::GwError;
 
