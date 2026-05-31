@@ -69,7 +69,7 @@ _finalize-release:
     git add Cargo.toml Cargo.lock CHANGELOG.md
     git commit -m "chore(release): v${VERSION}"
     git tag -a "v${VERSION}" -m "v${VERSION}"
-    @echo "Tagged v${VERSION}. Push with: git push && git push --tags"
+    echo "Tagged v${VERSION}. Push with: git push && git push --tags"
 
 # NOTE: there is intentionally no release-major recipe.
 # Major bumps are reserved to the project owner — see docs/RELEASING.md.
