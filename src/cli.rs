@@ -28,6 +28,8 @@ pub enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FindOutputFormat {
     Compact,
+    /// LLM-token-minimal `path:line` per match. Name inspired by
+    /// JuliusBrussee/caveman (the format itself is grepwrite-specific).
     Caveman,
     Json,
 }
@@ -35,6 +37,8 @@ pub enum FindOutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RewriteOutputFormat {
     Compact,
+    /// LLM-token-minimal `path:line` per match. Name inspired by
+    /// JuliusBrussee/caveman (the format itself is grepwrite-specific).
     Caveman,
     Json,
     /// Unified diff; only valid for `rewrite`.
