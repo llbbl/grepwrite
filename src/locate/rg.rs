@@ -197,7 +197,12 @@ fn decode_text(t: &RgText) -> String {
     String::new()
 }
 
-// TODO non-UTF8 paths: rg encodes them as base64 in `bytes`; we lossily decode.
+// LIMITATION: non-UTF-8 paths. rg encodes them as base64 in `bytes`;
+// we currently lossy-decode to UTF-8, which means a path containing
+// invalid UTF-8 bytes on Unix will round-trip through U+FFFD and
+// may not open the actual file in the mutate layer. Fix requires
+// platform-gated code (std::os::unix::ffi::OsStrExt) and is deferred
+// until there's a real user with non-UTF-8 paths.
 fn decode_path(t: &RgText) -> PathBuf {
     PathBuf::from(decode_text(t))
 }
