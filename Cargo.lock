@@ -258,6 +258,7 @@ dependencies = [
  "base64",
  "clap",
  "predicates",
+ "regex",
  "serde",
  "serde_json",
  "similar",

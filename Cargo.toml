@@ -25,6 +25,7 @@ anyhow = "1.0"
 thiserror = "2.0"
 uuid = { version = "1.23", features = ["v4"] }
 base64 = "0.22"
+regex = "1"
 
 [dev-dependencies]
 assert_cmd = "2.0"
