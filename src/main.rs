@@ -1,5 +1,11 @@
+//! Logging policy: user-facing operational output (e.g. `gw: warning: ...`,
+//! `gw: <error>`) uses `eprintln!` to stderr unconditionally. Developer
+//! telemetry uses the `tracing` macros (`debug!`/`info!`/`warn!`) and is
+//! gated by the `GW_LOG` env var (off by default). The two channels coexist
+//! on stderr and are distinguishable by formatting (`gw: ...` vs `INFO ...`).
 use clap::Parser;
 use std::process::ExitCode;
+use tracing::info;
 
 mod cli;
 
@@ -17,7 +23,24 @@ use regex::Regex;
 use std::path::PathBuf;
 use std::process::Command as StdCommand;
 
+/// Initialize the `tracing` subscriber. Off by default; enable with
+/// `GW_LOG=<level>` (e.g. `GW_LOG=info`, `GW_LOG=debug`, `GW_LOG=trace`).
+/// Output is plain-text on stderr, with no ANSI colors and no module-target
+/// noise, so it stays grep-friendly alongside user-facing `gw: ...` lines.
+fn init_logging() {
+    use tracing_subscriber::{EnvFilter, fmt};
+    let filter = EnvFilter::try_from_env("GW_LOG").unwrap_or_else(|_| EnvFilter::new("off"));
+    fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .with_ansi(false)
+        .compact()
+        .init();
+}
+
 fn main() -> ExitCode {
+    init_logging();
     let cli = Cli::parse();
     let code = match dispatch(cli) {
         Ok(code) => code,
@@ -306,6 +329,7 @@ fn run_rewrite_apply(
     if let (Some(ref mut m), Some(repo)) = (manifest.as_mut(), repo_root.as_deref())
         && let Err(e) = snapshot::record_applied_blobs(m, repo)
     {
+        tracing::warn!(error = %e, snapshot_id = %m.id, "failed to record applied blobs");
         eprintln!(
             "gw: warning: failed to record post-apply blob hashes ({e}); immediate undo may be blocked. Commit or revert your changes to recover."
         );
@@ -313,6 +337,13 @@ fn run_rewrite_apply(
 
     let snapshot_id = manifest.as_ref().map(|m| m.id.as_str());
     let _ = total_edits; // referenced via caveman path below
+    info!(
+        applied = true,
+        snapshot_id = snapshot_id.unwrap_or("<none>"),
+        files = file_diffs.len(),
+        edits = edit_previews.len(),
+        "rewrite --apply complete"
+    );
     emit_rewrite_apply_output(&args, matches, &file_diffs, &edit_previews, snapshot_id)?;
     Ok(0)
 }

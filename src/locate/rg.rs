@@ -68,6 +68,7 @@ impl Locate for RgLocator {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        tracing::debug!(cmd = ?cmd, "invoking rg");
         let mut child = cmd
             .spawn()
             .map_err(|e| GwError::Engine(format!("failed to spawn rg: {e}")))?;
@@ -77,6 +78,7 @@ impl Locate for RgLocator {
             .take()
             .ok_or_else(|| GwError::Engine("failed to capture rg stdout".into()))?;
         let matches = parse_rg_events(BufReader::new(stdout))?;
+        tracing::debug!(matches = matches.len(), "rg returned matches");
 
         let output = child
             .wait_with_output()

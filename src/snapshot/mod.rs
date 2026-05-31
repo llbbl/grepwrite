@@ -126,6 +126,7 @@ pub fn create(
         .map_err(|e| GwError::Snapshot(format!("create snapshots dir {}: {e}", dir.display())))?;
 
     write_manifest_atomic(&dir, &manifest)?;
+    tracing::info!(id = %manifest.id, paths = manifest.paths.len(), "created snapshot");
     Ok(manifest)
 }
 
@@ -209,6 +210,7 @@ pub fn undo(repo_root: &Path, identifier: &str) -> Result<Manifest, GwError> {
         GwError::Snapshot(format!("remove manifest {}: {e}", manifest_path.display()))
     })?;
 
+    tracing::info!(id = %manifest.id, restored = manifest.paths.len(), "undo complete");
     Ok(manifest)
 }
 
@@ -244,6 +246,10 @@ pub fn record_applied_blobs(manifest: &mut Manifest, repo_root: &Path) -> Result
     manifest.applied_blobs = new_blobs;
     let dir = snapshots_dir(&repo_root);
     write_manifest_atomic(&dir, manifest)?;
+    tracing::debug!(
+        blobs = manifest.applied_blobs.len(),
+        "recorded applied blobs"
+    );
     Ok(())
 }
 

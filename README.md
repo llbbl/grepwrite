@@ -31,6 +31,17 @@ just         # list all recipes
 
 Requires Rust 1.85+ and [just](https://just.systems/). See [`docs/RELEASING.md`](docs/RELEASING.md) for the release procedure.
 
+## Debugging
+
+Set `GW_LOG` to enable development logging (off by default):
+
+```bash
+GW_LOG=info gw find foo
+GW_LOG=debug gw rewrite foo bar --apply
+```
+
+Log levels: `error`, `warn`, `info`, `debug`, `trace`. Output is plain-text on stderr, kept separate from user-facing errors (which always prefix with `gw:`).
+
 ## Credits
 
 The `caveman` output format (`gw find -o caveman` / `gw rewrite -o caveman`) takes its name from [JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman), a JS-side LLM-token-minimal output utility. `gw`'s caveman format is a Rust-side reinterpretation (`path:line` per match, frozen post-1.0); the implementation and exact output shape are grepwrite-specific.

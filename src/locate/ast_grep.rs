@@ -193,6 +193,7 @@ impl Locate for AstGrepLocator {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        tracing::debug!(cmd = ?cmd, rule = %rule_str, "invoking ast-grep");
         let mut child = cmd
             .spawn()
             .map_err(|e| GwError::Engine(format!("failed to spawn ast-grep: {e}")))?;
@@ -202,6 +203,7 @@ impl Locate for AstGrepLocator {
             .take()
             .ok_or_else(|| GwError::Engine("failed to capture ast-grep stdout".into()))?;
         let matches = parse_ast_grep_events(BufReader::new(stdout))?;
+        tracing::debug!(matches = matches.len(), "ast-grep returned matches");
 
         let output = child
             .wait_with_output()

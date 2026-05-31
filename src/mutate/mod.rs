@@ -181,6 +181,7 @@ pub fn plan_edits_for_file(
         });
     }
 
+    tracing::debug!(path = %path.display(), edits = edits.len(), "planned edits");
     Ok((content, edits))
 }
 
@@ -208,6 +209,7 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<(), GwError> {
         .map_err(|e| GwError::Engine(format!("flush temp file for {}: {e}", path.display())))?;
     tmp.persist(path)
         .map_err(|e| GwError::Engine(format!("persist {} atomically: {e}", path.display())))?;
+    tracing::debug!(path = %path.display(), "wrote atomically");
     Ok(())
 }
 
