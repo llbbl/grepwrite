@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.7] - 2026-05-31
+
+### Documentation
+
+- **readme:** Add crates.io badges and install line
+- Restructure README and split contributor docs into CONTRIBUTING.md
 ## [0.1.6] - 2026-05-31
 
 ### Miscellaneous
