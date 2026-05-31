@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.7] - 2026-05-31
+
+### Features
+
+- **snapshot:** Add git-ref-based snapshot layer with manifest
 ## [0.0.6] - 2026-05-31
 
 ### Features
