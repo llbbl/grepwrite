@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.5] - 2026-05-31
+
+### Features
+
+- **output:** Add compact formatter as default for gw find
 ## [0.0.4] - 2026-05-31
 
 ### Documentation
