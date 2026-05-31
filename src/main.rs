@@ -6,9 +6,14 @@ mod cli;
 use cli::{Cli, Command, FindArgs, FindOutputFormat, RewriteArgs, RewriteOutputFormat};
 use grepwrite::errors::GwError;
 use grepwrite::locate::{Locate, Query, rg::RgLocator};
-use grepwrite::mutate::{apply_edits, group_matches_by_path, plan_edits_for_file};
+use grepwrite::mutate::{
+    apply_edits, group_matches_by_path, plan_edits_for_file, write_file_atomic,
+};
 use grepwrite::output::{caveman, compact};
+use grepwrite::snapshot;
 use regex::Regex;
+use std::path::PathBuf;
+use std::process::Command as StdCommand;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -59,19 +64,12 @@ fn run_find(args: FindArgs) -> Result<i32, GwError> {
 }
 
 fn run_rewrite(args: RewriteArgs) -> Result<i32, GwError> {
-    // task #7 will implement actual writes; for now reject --apply explicitly.
-    if args.apply {
-        return Err(GwError::NotImplemented("--apply (task #7)"));
-    }
-
-    // Reject output formats that don't have a rewrite renderer yet. Compact
-    // rewrite output is scheduled for task #7/#10 alongside the apply path.
+    // Output format gating. Caveman is fully wired for both dry-run and apply.
+    // The other formats land in task #10.
     match args.output {
         RewriteOutputFormat::Caveman => {}
         RewriteOutputFormat::Compact => {
-            return Err(GwError::NotImplemented(
-                "compact rewrite output (task #7/#10)",
-            ));
+            return Err(GwError::NotImplemented("compact rewrite output (task #10)"));
         }
         RewriteOutputFormat::Json => {
             return Err(GwError::NotImplemented("json rewrite output (task #10)"));
@@ -89,10 +87,10 @@ fn run_rewrite(args: RewriteArgs) -> Result<i32, GwError> {
 
     let query = Query {
         pattern: args.pattern.clone(),
-        paths: args.path.into_iter().collect(),
-        type_filter: args.type_,
-        globs: args.glob.into_iter().collect(),
-        in_scope: args.in_scope,
+        paths: args.path.clone().into_iter().collect(),
+        type_filter: args.type_.clone(),
+        globs: args.glob.clone().into_iter().collect(),
+        in_scope: args.in_scope.clone(),
         context: None,
         hidden: false,
         no_ignore: false,
@@ -100,21 +98,164 @@ fn run_rewrite(args: RewriteArgs) -> Result<i32, GwError> {
 
     let matches = RgLocator.run(&query)?;
 
-    let grouped = group_matches_by_path(&matches);
+    if args.apply {
+        run_rewrite_apply(args, &pattern, &matches)
+    } else {
+        run_rewrite_dry_run(args, &pattern, &matches)
+    }
+}
+
+fn run_rewrite_dry_run(
+    args: RewriteArgs,
+    pattern: &Regex,
+    matches: &[grepwrite::locate::Match],
+) -> Result<i32, GwError> {
+    let grouped = group_matches_by_path(matches);
     let mut total_edits = 0usize;
     for (path, file_matches) in &grouped {
-        // Plan edits (this reads the file but never writes). We discard the
-        // resulting content for the caveman renderer — it only needs counts
-        // and (path, line) per match — but we still go through plan +
-        // apply_edits so any error (overlap, bad capture ref, char-boundary
-        // crossing) surfaces during dry-run, not just at --apply time.
+        // Plan + apply in-memory; never write. Surfaces overlap / bad capture
+        // ref / char-boundary errors during dry-run, not just at --apply time.
         let (original, edits) =
-            plan_edits_for_file(path, file_matches, &pattern, &args.replacement)?;
+            plan_edits_for_file(path, file_matches, pattern, &args.replacement)?;
         let _new_content = apply_edits(&original, &edits)?;
         total_edits += edits.len();
     }
-
-    print!("{}", caveman::render_rewrite_dry_run(&matches, total_edits));
-
+    print!("{}", caveman::render_rewrite_dry_run(matches, total_edits));
     if total_edits == 0 { Ok(1) } else { Ok(0) }
+}
+
+fn run_rewrite_apply(
+    args: RewriteArgs,
+    pattern: &Regex,
+    matches: &[grepwrite::locate::Match],
+) -> Result<i32, GwError> {
+    // Anchor every relative path against the user's search root so that the
+    // snapshot layer can normalize them under the repo root.
+    let search_root = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
+
+    // Repo detection. With --no-snapshot, missing repo is allowed (writes
+    // proceed, no undo possible). Otherwise refusal short-circuits everything.
+    let repo_root: Option<PathBuf> = if args.no_snapshot {
+        snapshot::try_detect_repo_root(&search_root)?
+    } else {
+        Some(snapshot::detect_repo_root(&search_root)?)
+    };
+
+    // Clean-tree precheck. Applies whole-repo, per spec: a dirty tree
+    // anywhere is dirty for our purposes, since `git checkout <sha> -- paths`
+    // could surprise the user later. Bypass with --force.
+    if let Some(repo) = repo_root.as_deref()
+        && !args.force
+    {
+        require_clean_tree(repo)?;
+    }
+
+    // Plan every edit before touching disk. If any planning step fails, no
+    // files are written. We collect both the new content per path and the
+    // path list so the snapshot covers exactly what we're about to touch.
+    let grouped = group_matches_by_path(matches);
+    let mut planned: Vec<(PathBuf, String, usize)> = Vec::with_capacity(grouped.len());
+    let mut total_edits = 0usize;
+    for (path, file_matches) in &grouped {
+        let (original, edits) =
+            plan_edits_for_file(path, file_matches, pattern, &args.replacement)?;
+        let new_content = apply_edits(&original, &edits)?;
+        total_edits += edits.len();
+        planned.push((path.clone(), new_content, edits.len()));
+    }
+
+    if planned.is_empty() {
+        // Nothing to apply; mirror dry-run no-match exit code.
+        print!("{}", caveman::render_rewrite_applied(matches, 0, None));
+        return Ok(1);
+    }
+
+    // Snapshot CREATE (pre-write). After this point, even if writes fail
+    // partway, the manifest covers all targeted paths so `gw undo` can
+    // restore the originals from HEAD.
+    let mut manifest = match repo_root.as_deref() {
+        Some(repo) if !args.no_snapshot => {
+            let paths: Vec<PathBuf> = planned.iter().map(|(p, _, _)| p.clone()).collect();
+            Some(snapshot::create(
+                repo,
+                &paths,
+                args.snapshot.clone(),
+                total_edits,
+            )?)
+        }
+        _ => {
+            // Either --no-snapshot or no repo (only reachable with --no-snapshot).
+            eprintln!(
+                "gw: warning: no snapshot created (--no-snapshot or not in a git repo); undo not possible"
+            );
+            None
+        }
+    };
+
+    // Per-file atomic writes. If one fails, abort the rest and remind the
+    // user about the snapshot — partial state is on disk, but `gw undo`
+    // covers every targeted path.
+    for (path, new_content, _) in &planned {
+        if let Err(e) = write_file_atomic(path, new_content) {
+            let snapshot_hint = manifest
+                .as_ref()
+                .map(|m| {
+                    format!(
+                        " Snapshot id {} covers all targeted files; run `gw undo {}` to roll back.",
+                        m.id, m.id
+                    )
+                })
+                .unwrap_or_default();
+            return Err(GwError::Engine(format!(
+                "file write failed for '{}': {e}.{snapshot_hint}",
+                path.display()
+            )));
+        }
+    }
+
+    // Snapshot RECORD (post-write). If this fails, writes already landed —
+    // we proceed with a warning rather than abort. The manifest still exists
+    // (without blob hashes), and `undo` will fall back to the HEAD-only check
+    // for paths the user hasn't touched (which, immediately after apply,
+    // means content == what we just wrote, NOT what HEAD has — so this
+    // degraded path effectively blocks immediate undo until the user either
+    // commits or reverts). We surface the warning so the user knows.
+    if let (Some(ref mut m), Some(repo)) = (manifest.as_mut(), repo_root.as_deref())
+        && let Err(e) = snapshot::record_applied_blobs(m, repo)
+    {
+        eprintln!(
+            "gw: warning: failed to record post-apply blob hashes ({e}); immediate undo may be blocked. Commit or revert your changes to recover."
+        );
+    }
+
+    let snapshot_id = manifest.as_ref().map(|m| m.id.as_str());
+    print!(
+        "{}",
+        caveman::render_rewrite_applied(matches, total_edits, snapshot_id)
+    );
+    Ok(0)
+}
+
+/// Whole-repo dirty check via `git status --porcelain`. Refuses with
+/// `ApplyRefused` (exit 4) when anything is uncommitted; tell the user how
+/// to opt out.
+fn require_clean_tree(repo_root: &std::path::Path) -> Result<(), GwError> {
+    let output = StdCommand::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| GwError::Engine(format!("git status: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GwError::Engine(format!(
+            "git status failed: {}",
+            stderr.trim()
+        )));
+    }
+    if !output.stdout.is_empty() {
+        return Err(GwError::ApplyRefused(
+            "working tree is dirty; commit or stash, or pass --force".to_string(),
+        ));
+    }
+    Ok(())
 }

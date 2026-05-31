@@ -41,10 +41,8 @@ fn init_repo(repo: &Path) {
 }
 
 /// Exercises the **post-commit** undo flow: snapshot, mutate, commit, then
-/// undo. This is NOT the immediate-after-apply flow — `undo` currently refuses
-/// when covered paths have uncommitted changes, which is what `--apply` leaves
-/// behind. See the `TODO(task #7)` comment above the dirty-check in
-/// `src/snapshot/mod.rs`.
+/// undo. Both immediate-post-apply and post-commit flows are supported now;
+/// see `undo_succeeds_immediately_after_apply` for the immediate case.
 #[test]
 fn undo_after_user_commits_restores_baseline() {
     if !git_available() {
@@ -97,10 +95,9 @@ fn undo_after_user_commits_restores_baseline() {
     );
 }
 
-/// Pins the current refuse-on-dirty behavior. This is also the exact state
-/// that `gw rewrite --apply` leaves the tree in, which is why task #7 needs
-/// a design decision before the snapshot-mutate-undo loop will work
-/// end-to-end. See the `TODO(task #7)` comment in `src/snapshot/mod.rs`.
+/// `undo` refuses when a covered path's content matches NEITHER the snapshot
+/// HEAD blob NOR the recorded applied blob — i.e. the user has edited on top
+/// of whatever gw wrote, and we must not clobber their work.
 #[test]
 fn undo_refuses_when_paths_have_uncommitted_changes() {
     if !git_available() {
@@ -117,23 +114,60 @@ fn undo_refuses_when_paths_have_uncommitted_changes() {
     run_git(repo, &["add", "a.txt"]);
     run_git(repo, &["commit", "-q", "-m", "baseline"]);
 
-    let manifest = snapshot::create(repo, &[PathBuf::from("a.txt")], None, 1).expect("create");
+    let mut manifest = snapshot::create(repo, &[PathBuf::from("a.txt")], None, 1).expect("create");
 
-    // Mutate on disk without committing — this is exactly the state
-    // `gw rewrite --apply` leaves the tree in.
-    fs::write(repo.join("a.txt"), b"mutated by gw apply\n").unwrap();
+    // Simulate gw apply: write a "gw-authored" version and record its blob.
+    fs::write(repo.join("a.txt"), b"gw wrote this\n").unwrap();
+    snapshot::record_applied_blobs(&mut manifest, repo).expect("record blobs");
 
-    let err = snapshot::undo(repo, &manifest.id).expect_err("should refuse dirty tree");
+    // Now the user edits on top — content matches neither HEAD nor the
+    // recorded blob — undo must refuse to preserve user work.
+    fs::write(repo.join("a.txt"), b"user edited on top of gw\n").unwrap();
+
+    let err = snapshot::undo(repo, &manifest.id).expect_err("should refuse user edit");
     match err {
         GwError::Snapshot(msg) => {
             assert!(
-                msg.contains("uncommitted changes"),
-                "expected 'uncommitted changes' in message, got: {msg}"
+                msg.contains("modified since gw wrote it"),
+                "unexpected message: {msg}"
             );
             assert_eq!(GwError::Snapshot(msg).exit_code(), 5);
         }
         other => panic!("expected GwError::Snapshot, got {other:?}"),
     }
+}
+
+/// The headline workflow: `gw rewrite --apply` leaves uncommitted edits in
+/// the working tree, and `gw undo` immediately afterward must succeed.
+#[test]
+fn undo_succeeds_immediately_after_apply() {
+    if !git_available() {
+        eprintln!("skipping: `git` not on PATH");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo = tmp.path();
+    init_repo(repo);
+
+    let original = b"baseline\nfile\n";
+    fs::write(repo.join("a.txt"), original).unwrap();
+    run_git(repo, &["add", "a.txt"]);
+    run_git(repo, &["commit", "-q", "-m", "baseline"]);
+
+    // Snapshot at clean HEAD.
+    let mut manifest = snapshot::create(repo, &[PathBuf::from("a.txt")], None, 1).expect("create");
+
+    // Simulate the --apply write.
+    fs::write(repo.join("a.txt"), b"after gw apply\n").unwrap();
+    snapshot::record_applied_blobs(&mut manifest, repo).expect("record blobs");
+
+    // Immediate undo, with uncommitted gw-authored edits in the tree.
+    let restored = snapshot::undo(repo, &manifest.id).expect("undo right after apply");
+    assert_eq!(restored.id, manifest.id);
+
+    let after = fs::read(repo.join("a.txt")).unwrap();
+    assert_eq!(after, original, "file not restored to pre-apply baseline");
 }
 
 #[test]

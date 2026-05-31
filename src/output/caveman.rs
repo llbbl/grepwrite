@@ -22,6 +22,39 @@ pub fn render_rewrite_dry_run(matches: &[Match], edits_count: usize) -> String {
     out
 }
 
+/// Caveman renderer for the post-apply success summary. Per-match `path:line`
+/// lines (so an LLM can re-read changed locations), then a trailer encoding
+/// the file/edit counts and the snapshot id (or "no snapshot" when
+/// `--no-snapshot` was passed). The snapshot id lives in the trailer so the
+/// per-match output stays a clean grep-style stream.
+pub fn render_rewrite_applied(
+    matches: &[Match],
+    edits_count: usize,
+    snapshot_id: Option<&str>,
+) -> String {
+    let mut out = render_find(matches);
+    let files = matches
+        .iter()
+        .map(|m| &m.path)
+        .collect::<HashSet<&PathBuf>>()
+        .len();
+    match snapshot_id {
+        Some(id) => {
+            let _ = writeln!(
+                out,
+                "{files} files, {edits_count} edits, applied (snapshot: {id})"
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "{files} files, {edits_count} edits, applied (no snapshot)"
+            );
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +93,23 @@ mod tests {
         let ms = vec![m("a.rs", 1), m("a.rs", 5), m("b.rs", 2)];
         let out = render_rewrite_dry_run(&ms, 3);
         assert_eq!(out, "a.rs:1\na.rs:5\nb.rs:2\n2 files, 3 edits, dry-run\n");
+    }
+
+    #[test]
+    fn render_rewrite_applied_with_snapshot() {
+        let ms = vec![m("a.rs", 1), m("b.rs", 2)];
+        let out = render_rewrite_applied(&ms, 2, Some("2026-05-31T09-45-12-abc123"));
+        assert_eq!(
+            out,
+            "a.rs:1\nb.rs:2\n2 files, 2 edits, applied (snapshot: 2026-05-31T09-45-12-abc123)\n"
+        );
+    }
+
+    #[test]
+    fn render_rewrite_applied_no_snapshot() {
+        let ms = vec![m("a.rs", 1)];
+        let out = render_rewrite_applied(&ms, 1, None);
+        assert_eq!(out, "a.rs:1\n1 files, 1 edits, applied (no snapshot)\n");
     }
 
     #[test]

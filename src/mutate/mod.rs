@@ -14,6 +14,7 @@ use crate::locate::Match;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// A file-relative edit. `byte_start..byte_end` is replaced with `replacement`.
@@ -183,6 +184,33 @@ pub fn plan_edits_for_file(
     Ok((content, edits))
 }
 
+/// Atomically replace `path`'s contents with `content`. Writes a temp file
+/// in `path`'s parent directory, fsyncs it, then `rename`s it into place.
+/// Since both files share a filesystem, the rename is atomic on POSIX, and
+/// any reader observes either the old or new content — never a partial write.
+///
+/// Errors if the parent directory doesn't exist (we don't `mkdir -p`; the
+/// caller is rewriting an existing file by definition).
+pub fn write_file_atomic(path: &Path, content: &str) -> Result<(), GwError> {
+    let parent = path.parent().ok_or_else(|| {
+        GwError::Engine(format!(
+            "cannot write file with no parent directory: {}",
+            path.display()
+        ))
+    })?;
+    // tempfile::NamedTempFile::new_in errors cleanly if the parent dir
+    // doesn't exist — we surface that as a GwError::Engine.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| GwError::Engine(format!("create temp file in {}: {e}", parent.display())))?;
+    tmp.write_all(content.as_bytes())
+        .map_err(|e| GwError::Engine(format!("write temp file for {}: {e}", path.display())))?;
+    tmp.flush()
+        .map_err(|e| GwError::Engine(format!("flush temp file for {}: {e}", path.display())))?;
+    tmp.persist(path)
+        .map_err(|e| GwError::Engine(format!("persist {} atomically: {e}", path.display())))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +272,37 @@ mod tests {
         // [0..3] and [3..6] share no bytes; should NOT trigger overlap.
         let r = apply_edits("abcdef", &[e(0, 3, "X"), e(3, 6, "Y")]).unwrap();
         assert_eq!(r, "XY");
+    }
+
+    #[test]
+    fn write_file_atomic_happy_path_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("out.txt");
+        // Pre-existing content: overwrite.
+        std::fs::write(&p, b"old\n").unwrap();
+        write_file_atomic(&p, "brand new content\nline 2\n").expect("write");
+        let back = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(back, "brand new content\nline 2\n");
+    }
+
+    #[test]
+    fn write_file_atomic_creates_new_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("fresh.txt");
+        assert!(!p.exists());
+        write_file_atomic(&p, "hi").expect("write");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hi");
+    }
+
+    #[test]
+    fn write_file_atomic_errors_on_missing_parent_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("no-such-subdir").join("x.txt");
+        let err = write_file_atomic(&p, "x").expect_err("should fail");
+        match err {
+            GwError::Engine(msg) => assert!(msg.contains("temp file"), "msg: {msg}"),
+            other => panic!("expected Engine, got {other:?}"),
+        }
     }
 
     #[test]

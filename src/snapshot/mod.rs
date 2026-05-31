@@ -10,6 +10,7 @@
 //!
 //! No `git2` dependency — all git interaction is via `std::process::Command`.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::errors::GwError;
@@ -31,6 +33,11 @@ use crate::errors::GwError;
 /// - `paths`: repo-relative paths covered by the snapshot.
 /// - `created_at`: RFC3339 UTC, authoritative for `list` ordering.
 /// - `edits_count`: number of edits the snapshot was created for (informational).
+/// - `applied_blobs`: sha256 (hex) of the post-apply file contents for each
+///   covered path. Populated by [`record_applied_blobs`] after `--apply`
+///   writes succeed. `undo` uses these to distinguish gw-authored content
+///   (safe to clobber) from later user edits (refuse). Defaults to empty on
+///   manifests written before this field existed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
@@ -39,6 +46,8 @@ pub struct Manifest {
     pub paths: Vec<PathBuf>,
     pub created_at: String,
     pub edits_count: usize,
+    #[serde(default)]
+    pub applied_blobs: BTreeMap<PathBuf, String>,
 }
 
 const SNAPSHOTS_SUBDIR: &str = "gw-snapshots";
@@ -70,6 +79,18 @@ pub fn detect_repo_root(start: &Path) -> Result<PathBuf, GwError> {
     Ok(PathBuf::from(trimmed))
 }
 
+/// Variant of [`detect_repo_root`] that returns `Ok(None)` instead of
+/// `ApplyRefused` when `start` is not inside a git repo. Used by the
+/// `--no-snapshot` apply path, which is allowed to operate outside a repo.
+/// Other failures (git missing, non-utf8 output) still surface as errors.
+pub fn try_detect_repo_root(start: &Path) -> Result<Option<PathBuf>, GwError> {
+    match detect_repo_root(start) {
+        Ok(p) => Ok(Some(p)),
+        Err(GwError::ApplyRefused(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// Create a snapshot pinned at HEAD covering the given paths.
 ///
 /// `paths` should be repo-relative; if absolute, they are stripped against
@@ -97,6 +118,7 @@ pub fn create(
         paths: rel_paths,
         created_at,
         edits_count,
+        applied_blobs: BTreeMap::new(),
     };
 
     let dir = snapshots_dir(&repo_root);
@@ -152,38 +174,16 @@ pub fn undo(repo_root: &Path, identifier: &str) -> Result<Manifest, GwError> {
 
     let (manifest, manifest_path) = resolve_identifier(&dir, identifier)?;
 
-    // Refuse if any covered path has uncommitted changes — would clobber.
-    //
-    // TODO(task #7): the immediate post-apply case will trip this check
-    // because --apply leaves uncommitted edits in the working tree by design.
-    // Need to decide between: (a) recording post-apply blob shas in the
-    // manifest so we can distinguish gw-authored changes from user changes,
-    // or (b) loosening this to refuse only when files differ from BOTH the
-    // snapshot HEAD AND any blob we wrote. The current refuse-on-any-dirty
-    // rule matches the spec but blocks the headline workflow until decided.
+    // Refuse to clobber user-authored edits, but allow the headline
+    // post-apply workflow. For each covered path, a working-tree state is safe
+    // to restore if its current content matches EITHER:
+    //   - the recorded `applied_blobs` sha (gw wrote it; user hasn't touched it)
+    //   - the snapshot HEAD's blob (already-undone / file unchanged from base)
+    // If neither, the user has modified the file since gw wrote it; refuse so
+    // their work is preserved.
     if !manifest.paths.is_empty() {
-        let mut status_cmd = Command::new("git");
-        status_cmd
-            .args(["status", "--porcelain", "--"])
-            .current_dir(&repo_root);
         for p in &manifest.paths {
-            status_cmd.arg(p);
-        }
-        let output = status_cmd
-            .output()
-            .map_err(|e| GwError::Snapshot(format!("git status: {e}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(GwError::Snapshot(format!(
-                "git status failed: {}",
-                stderr.trim()
-            )));
-        }
-        if !output.stdout.is_empty() {
-            return Err(GwError::Snapshot(format!(
-                "refusing to undo snapshot '{}': uncommitted changes present in covered paths",
-                manifest.id
-            )));
+            check_path_safe_to_restore(&repo_root, p, &manifest)?;
         }
 
         let mut checkout_cmd = Command::new("git");
@@ -210,6 +210,150 @@ pub fn undo(repo_root: &Path, identifier: &str) -> Result<Manifest, GwError> {
     })?;
 
     Ok(manifest)
+}
+
+/// Hash the post-apply on-disk contents of each path in `manifest.paths` and
+/// store them in `manifest.applied_blobs`. Re-persists the manifest file
+/// atomically. Call this AFTER all per-file writes succeed.
+///
+/// Missing files are skipped silently (a write failure earlier in the pipeline
+/// may have left some paths untouched — the snapshot still covers them via
+/// HEAD, and `undo` will treat absence as "matches HEAD" only if HEAD also has
+/// no such path; otherwise it will simply restore from HEAD).
+pub fn record_applied_blobs(manifest: &mut Manifest, repo_root: &Path) -> Result<(), GwError> {
+    let repo_root = detect_repo_root(repo_root)?;
+    let mut new_blobs: BTreeMap<PathBuf, String> = BTreeMap::new();
+    for p in &manifest.paths {
+        let abs = repo_root.join(p);
+        match fs::read(&abs) {
+            Ok(bytes) => {
+                new_blobs.insert(p.clone(), sha256_hex(&bytes));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Skip: file wasn't written (or was removed). Undo will fall
+                // back to the HEAD-content comparison for this path.
+            }
+            Err(e) => {
+                return Err(GwError::Snapshot(format!(
+                    "hash post-apply content for {}: {e}",
+                    abs.display()
+                )));
+            }
+        }
+    }
+    manifest.applied_blobs = new_blobs;
+    let dir = snapshots_dir(&repo_root);
+    write_manifest_atomic(&dir, manifest)?;
+    Ok(())
+}
+
+/// Confirm that `p` (repo-relative) is safe to restore over: its current
+/// content matches either the recorded applied blob OR the snapshot HEAD's
+/// blob. Otherwise refuse so user work isn't clobbered.
+fn check_path_safe_to_restore(
+    repo_root: &Path,
+    p: &Path,
+    manifest: &Manifest,
+) -> Result<(), GwError> {
+    let abs = repo_root.join(p);
+    let current = match fs::read(&abs) {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(GwError::Snapshot(format!("read {}: {e}", abs.display())));
+        }
+    };
+
+    // Match against recorded applied blob (gw-authored, untouched by user).
+    if let (Some(bytes), Some(recorded)) = (current.as_ref(), manifest.applied_blobs.get(p))
+        && &sha256_hex(bytes) == recorded
+    {
+        return Ok(());
+    }
+
+    // Match against the snapshot HEAD's content (already-undone case, or
+    // file was never modified).
+    let head_blob = git_show_blob(repo_root, &manifest.head_sha, p)?;
+    match (current.as_ref(), head_blob.as_ref()) {
+        (Some(cur), Some(head)) if cur == head => return Ok(()),
+        (None, None) => return Ok(()),
+        _ => {}
+    }
+
+    // Final allowance: if the path is clean relative to the *current* HEAD
+    // (i.e. the user committed whatever gw wrote, or committed something else
+    // and then reset their working tree), there is nothing on disk that would
+    // be lost by a checkout. The user can recover via the reflog if needed.
+    if path_clean_against_head(repo_root, p)? {
+        return Ok(());
+    }
+
+    Err(GwError::Snapshot(format!(
+        "path '{}' modified since gw wrote it; refusing to clobber",
+        p.display()
+    )))
+}
+
+/// True iff `git status --porcelain -- <p>` reports no changes — i.e. the
+/// working tree and index agree with the current HEAD for this path.
+fn path_clean_against_head(repo_root: &Path, p: &Path) -> Result<bool, GwError> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain", "--"])
+        .arg(p)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| GwError::Snapshot(format!("git status: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GwError::Snapshot(format!(
+            "git status failed: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(output.stdout.is_empty())
+}
+
+/// Return the blob bytes for `path` at `commit_sha`, or `None` if the path
+/// did not exist at that commit.
+fn git_show_blob(
+    repo_root: &Path,
+    commit_sha: &str,
+    path: &Path,
+) -> Result<Option<Vec<u8>>, GwError> {
+    let spec = format!("{}:{}", commit_sha, path.display());
+    let output = Command::new("git")
+        .args(["show", &spec])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| GwError::Snapshot(format!("git show {spec}: {e}")))?;
+    if output.status.success() {
+        Ok(Some(output.stdout))
+    } else {
+        // Distinguish "path didn't exist at that commit" (acceptable) from
+        // real errors. git's wording varies; "exists on disk, but not in" or
+        // "does not exist in" both signal the not-in-tree case.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
+            Ok(None)
+        } else {
+            Err(GwError::Snapshot(format!(
+                "git show {spec} failed: {}",
+                stderr.trim()
+            )))
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let digest = h.finalize();
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 // --- internals ---------------------------------------------------------------
@@ -406,6 +550,7 @@ mod tests {
             paths: vec![PathBuf::from("src/x.ts"), PathBuf::from("src/y.ts")],
             created_at: "2026-05-31T09:45:12Z".into(),
             edits_count: 3,
+            applied_blobs: BTreeMap::new(),
         };
         let json = serde_json::to_string(&m).expect("serialize");
         let back: Manifest = serde_json::from_str(&json).expect("deserialize");
@@ -421,6 +566,7 @@ mod tests {
             paths: vec![],
             created_at: "2026-05-31T00:00:00Z".into(),
             edits_count: 0,
+            applied_blobs: BTreeMap::new(),
         };
         let json = serde_json::to_string(&m).expect("serialize");
         let back: Manifest = serde_json::from_str(&json).expect("deserialize");
@@ -440,6 +586,35 @@ mod tests {
         assert_eq!(format_rfc3339(946_684_800), "2000-01-01T00:00:00Z");
         // 2024-02-29T12:00:00Z = 1_709_208_000.
         assert_eq!(format_rfc3339(1_709_208_000), "2024-02-29T12:00:00Z");
+    }
+
+    #[test]
+    fn sha256_hex_known_vector() {
+        // Empty input -> well-known sha256 digest.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn manifest_with_missing_applied_blobs_field_deserializes() {
+        // Backward-compat: manifests written before applied_blobs existed
+        // must still deserialize, with applied_blobs defaulting to empty.
+        let json = r#"{
+            "id": "old-id",
+            "name": null,
+            "head_sha": "deadbeef",
+            "paths": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "edits_count": 0
+        }"#;
+        let m: Manifest = serde_json::from_str(json).expect("deserialize legacy manifest");
+        assert!(m.applied_blobs.is_empty());
     }
 
     #[test]

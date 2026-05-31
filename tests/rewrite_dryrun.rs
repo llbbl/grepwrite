@@ -136,17 +136,6 @@ fn unknown_capture_reference_exits_three() {
 }
 
 #[test]
-fn apply_flag_returns_not_implemented() {
-    let assert = Command::cargo_bin("gw")
-        .expect("gw binary")
-        .args(["rewrite", "foo", "bar", "--apply"])
-        .assert()
-        .code(70);
-    let stderr = std::str::from_utf8(&assert.get_output().stderr).unwrap();
-    assert!(stderr.contains("--apply"), "stderr: {stderr}");
-}
-
-#[test]
 fn compact_output_returns_not_implemented() {
     let assert = Command::cargo_bin("gw")
         .expect("gw binary")
