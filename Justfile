@@ -39,6 +39,25 @@ pre-commit: fmt lint test
 run *ARGS:
     cargo run -- {{ARGS}}
 
+# Build the smoke-testing Docker image
+docker-build:
+    docker build -f docker/smoke.Dockerfile -t grepwrite-smoke:latest .
+
+# Interactive shell in an ephemeral container (tmpfs /workspace, discarded on exit)
+docker-smoke:
+    docker run --rm -it \
+        --tmpfs /workspace:exec \
+        -w /workspace \
+        grepwrite-smoke:latest
+
+# Run the pre-canned demo script in a fresh container
+docker-smoke-demo:
+    docker run --rm -i --tmpfs /workspace:exec -w /workspace grepwrite-smoke:latest bash < docker/smoke.sh
+
+# Mount HOST_PATH read-write at /workspace (persistent fixture)
+docker-fixture HOST_PATH:
+    docker run --rm -it -v {{absolute_path(HOST_PATH)}}:/workspace -w /workspace grepwrite-smoke:latest
+
 # Regenerate the full CHANGELOG.md from git history
 changelog:
     git cliff -o CHANGELOG.md

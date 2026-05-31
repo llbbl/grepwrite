@@ -1,0 +1,30 @@
+# Keep the build context small and free of host noise.
+target/
+**/target/
+.git/
+.gitignore
+
+# Editor / OS detritus
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Repo-local non-source dirs
+_/
+.claude/
+.cursor/
+.codex/
+.antigravitycli/
+node_modules/
+
+# Project docs that aren't needed at build time
+CHANGELOG.md
+docs/
+README.md
+LICENSE
+
+# Docker bits themselves (no point sending them into the context)
+docker/
+.dockerignore
+Dockerfile*

@@ -2,7 +2,7 @@
 
 > Ripgrep-style search plus safe, transactional, AST-aware rewrites with built-in undo. Designed first for LLM coding agents, useful for humans.
 
-**Binary:** `gw` &nbsp;·&nbsp; **Status:** pre-implementation scaffold (v0.0.1)
+**Binary:** `gw` &nbsp;·&nbsp; **Status:** v0.1.x — `find` / `rewrite --apply` / `undo` / `snapshots` working end-to-end
 
 `gw` is what `rg --replace` would be if it actually wrote files. It wraps [ripgrep](https://github.com/BurntSushi/ripgrep) (and optionally [ast-grep](https://ast-grep.github.io/)) for search, then owns the mutation path: dry-run by default, atomic per-file writes, and every `--apply` automatically snapshots to a git ref so `gw undo` restores the exact pre-edit state.
 
@@ -19,7 +19,14 @@ LLM coding agents currently chain `rg` + `sed` + read-after-write to verify. Eve
 
 ## Status
 
-Scaffold only. The CLI surface (`gw find`, `gw rewrite`, `gw undo`, `gw snapshots`) is wired up; the locate / mutate / snapshot / output modules ship as stubs and are filled in module-by-module. Track progress in the repo's task list.
+All four verbs are wired end-to-end:
+
+- `gw find <pattern> [path]` — regex via [ripgrep](https://github.com/BurntSushi/ripgrep); `--in function|class|imports|comments` switches to [ast-grep](https://ast-grep.github.io/) for AST-scoped search.
+- `gw rewrite <pattern> <replacement> [path]` — dry-run by default; `--apply` requires a clean git tree (or `--force`) and writes atomically per file under a git-ref snapshot.
+- `gw undo [--snapshot <id|name>]` — restores the last (or named) snapshot, refusing to clobber user edits made on top of `gw`'s output.
+- `gw snapshots` — lists snapshots, newest first.
+
+Output formats: `compact` (default; rg-style for `find`, unified diff for `rewrite`), `caveman` (LLM-token-minimal `path:line`), `json` (stable schema v1), `diff` (unified, `rewrite` only).
 
 ## Build
 
@@ -29,7 +36,11 @@ just test    # or: cargo test
 just         # list all recipes
 ```
 
-Requires Rust 1.85+ and [just](https://just.systems/). See [`docs/RELEASING.md`](docs/RELEASING.md) for the release procedure.
+Requires Rust 1.88+ and [just](https://just.systems/). See [`docs/RELEASING.md`](docs/RELEASING.md) for the release procedure.
+
+## Smoke Testing
+
+For ephemeral, Docker-based manual exploration that doesn't pollute your host, see [`docs/SMOKE.md`](docs/SMOKE.md) (`just docker-build`, `just docker-smoke`, `just docker-smoke-demo`).
 
 ## Debugging
 
