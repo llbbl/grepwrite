@@ -134,14 +134,3 @@ fn unknown_capture_reference_exits_three() {
     let stderr = std::str::from_utf8(&assert.get_output().stderr).unwrap();
     assert!(stderr.contains("$5"), "stderr: {stderr}");
 }
-
-#[test]
-fn compact_output_returns_not_implemented() {
-    let assert = Command::cargo_bin("gw")
-        .expect("gw binary")
-        .args(["rewrite", "foo", "bar"])
-        .assert()
-        .code(70);
-    let stderr = std::str::from_utf8(&assert.get_output().stderr).unwrap();
-    assert!(stderr.contains("compact"), "stderr: {stderr}");
-}

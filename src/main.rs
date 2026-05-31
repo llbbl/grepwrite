@@ -9,6 +9,8 @@ use grepwrite::locate::{Locate, Match, Query, ast_grep::AstGrepLocator, rg::RgLo
 use grepwrite::mutate::{
     apply_edits, group_matches_by_path, plan_edits_for_file, write_file_atomic,
 };
+use grepwrite::output::diff::{self as diff_out, FileDiff};
+use grepwrite::output::json::{self as json_out, EditPreview};
 use grepwrite::output::{caveman, compact};
 use grepwrite::snapshot;
 use regex::Regex;
@@ -58,6 +60,7 @@ fn run_find(args: FindArgs) -> Result<i32, GwError> {
         no_ignore: args.no_ignore,
     };
 
+    let engine = engine_label(&query);
     let matches = locate(&query)?;
 
     match args.output {
@@ -67,28 +70,24 @@ fn run_find(args: FindArgs) -> Result<i32, GwError> {
         FindOutputFormat::Compact => {
             print!("{}", compact::render_find(&matches));
         }
-        FindOutputFormat::Json => return Err(GwError::NotImplemented("json format")),
+        FindOutputFormat::Json => {
+            print!("{}", json_out::render_find(&matches, engine)?);
+        }
     }
 
     if matches.is_empty() { Ok(1) } else { Ok(0) }
 }
 
-fn run_rewrite(args: RewriteArgs) -> Result<i32, GwError> {
-    // Output format gating. Caveman is fully wired for both dry-run and apply.
-    // The other formats land in task #10.
-    match args.output {
-        RewriteOutputFormat::Caveman => {}
-        RewriteOutputFormat::Compact => {
-            return Err(GwError::NotImplemented("compact rewrite output (task #10)"));
-        }
-        RewriteOutputFormat::Json => {
-            return Err(GwError::NotImplemented("json rewrite output (task #10)"));
-        }
-        RewriteOutputFormat::Diff => {
-            return Err(GwError::NotImplemented("diff rewrite output (task #10)"));
-        }
+/// Engine string for the JSON envelope. Mirrors the dispatch in `locate()`.
+fn engine_label(query: &Query) -> &'static str {
+    if query.in_scope.is_some() {
+        "ast-grep"
+    } else {
+        "rg"
     }
+}
 
+fn run_rewrite(args: RewriteArgs) -> Result<i32, GwError> {
     // Compile the user pattern once, up front: fail fast with a clear error
     // before we spawn rg. rg will also reject the bad pattern, but our message
     // is better when the failure is purely a regex syntax issue.
@@ -120,18 +119,97 @@ fn run_rewrite_dry_run(
     pattern: &Regex,
     matches: &[grepwrite::locate::Match],
 ) -> Result<i32, GwError> {
-    let grouped = group_matches_by_path(matches);
-    let mut total_edits = 0usize;
-    for (path, file_matches) in &grouped {
-        // Plan + apply in-memory; never write. Surfaces overlap / bad capture
-        // ref / char-boundary errors during dry-run, not just at --apply time.
-        let (original, edits) =
-            plan_edits_for_file(path, file_matches, pattern, &args.replacement)?;
-        let _new_content = apply_edits(&original, &edits)?;
-        total_edits += edits.len();
+    let plan = plan_all(matches, pattern, &args.replacement)?;
+    let total_edits = plan.total_edits;
+
+    match args.output {
+        RewriteOutputFormat::Caveman => {
+            print!("{}", caveman::render_rewrite_dry_run(matches, total_edits));
+        }
+        // Compact aliases to Diff for rewrite — see RewriteOutputFormat docs.
+        RewriteOutputFormat::Compact | RewriteOutputFormat::Diff => {
+            print!("{}", diff_out::render_rewrite(&plan.file_diffs));
+        }
+        RewriteOutputFormat::Json => {
+            let engine = engine_label_for_rewrite(&args);
+            print!(
+                "{}",
+                json_out::render_rewrite(matches, &plan.edit_previews, false, None, engine)?
+            );
+        }
     }
-    print!("{}", caveman::render_rewrite_dry_run(matches, total_edits));
+
     if total_edits == 0 { Ok(1) } else { Ok(0) }
+}
+
+fn engine_label_for_rewrite(args: &RewriteArgs) -> &'static str {
+    if args.in_scope.is_some() {
+        "ast-grep"
+    } else {
+        "rg"
+    }
+}
+
+/// Outcome of planning every file's edits — both the byte-edits used to
+/// produce post-apply content and the materialized before/after strings used
+/// by the JSON and diff renderers.
+struct PlanResult {
+    /// (path, new_content, edit_count) — fed to apply.
+    planned: Vec<(PathBuf, String, usize)>,
+    /// Per-file before/after pairs for diff rendering.
+    file_diffs: Vec<FileDiff>,
+    /// Per-match before/after pairs for JSON rendering.
+    edit_previews: Vec<EditPreview>,
+    total_edits: usize,
+}
+
+/// Plan edits across every file once. Centralizes the read/plan/apply
+/// pipeline so dry-run and apply both produce identical JSON/diff payloads.
+fn plan_all(
+    matches: &[grepwrite::locate::Match],
+    pattern: &Regex,
+    replacement: &str,
+) -> Result<PlanResult, GwError> {
+    let grouped = group_matches_by_path(matches);
+    let mut planned: Vec<(PathBuf, String, usize)> = Vec::with_capacity(grouped.len());
+    let mut file_diffs: Vec<FileDiff> = Vec::with_capacity(grouped.len());
+    let mut edit_previews: Vec<EditPreview> = Vec::with_capacity(matches.len());
+    let mut total_edits = 0usize;
+
+    for (path, file_matches) in &grouped {
+        let (original, edits) = plan_edits_for_file(path, file_matches, pattern, replacement)?;
+        let new_content = apply_edits(&original, &edits)?;
+        total_edits += edits.len();
+
+        // Per-match preview: pair each Match with its planned Edit in input
+        // order. plan_edits_for_file preserves order, so this is a simple zip.
+        for (m, e) in file_matches.iter().zip(edits.iter()) {
+            let before = original
+                .get(e.byte_start..e.byte_end)
+                .unwrap_or("")
+                .to_string();
+            edit_previews.push(EditPreview {
+                path: path.clone(),
+                line: m.line,
+                before,
+                after: e.replacement.clone(),
+            });
+        }
+
+        file_diffs.push(FileDiff {
+            path: path.clone(),
+            before: original,
+            after: new_content.clone(),
+        });
+        planned.push((path.clone(), new_content, edits.len()));
+    }
+
+    Ok(PlanResult {
+        planned,
+        file_diffs,
+        edit_previews,
+        total_edits,
+    })
 }
 
 fn run_rewrite_apply(
@@ -161,22 +239,17 @@ fn run_rewrite_apply(
     }
 
     // Plan every edit before touching disk. If any planning step fails, no
-    // files are written. We collect both the new content per path and the
-    // path list so the snapshot covers exactly what we're about to touch.
-    let grouped = group_matches_by_path(matches);
-    let mut planned: Vec<(PathBuf, String, usize)> = Vec::with_capacity(grouped.len());
-    let mut total_edits = 0usize;
-    for (path, file_matches) in &grouped {
-        let (original, edits) =
-            plan_edits_for_file(path, file_matches, pattern, &args.replacement)?;
-        let new_content = apply_edits(&original, &edits)?;
-        total_edits += edits.len();
-        planned.push((path.clone(), new_content, edits.len()));
-    }
+    // files are written.
+    let plan = plan_all(matches, pattern, &args.replacement)?;
+    let total_edits = plan.total_edits;
+    let planned = plan.planned;
+    let file_diffs = plan.file_diffs;
+    let edit_previews = plan.edit_previews;
 
     if planned.is_empty() {
-        // Nothing to apply; mirror dry-run no-match exit code.
-        print!("{}", caveman::render_rewrite_applied(matches, 0, None));
+        // Nothing to apply; mirror dry-run no-match exit code. Honor the
+        // user's selected output format for the empty-result render.
+        emit_rewrite_apply_output(&args, matches, &file_diffs, &edit_previews, None)?;
         return Ok(1);
     }
 
@@ -239,11 +312,48 @@ fn run_rewrite_apply(
     }
 
     let snapshot_id = manifest.as_ref().map(|m| m.id.as_str());
-    print!(
-        "{}",
-        caveman::render_rewrite_applied(matches, total_edits, snapshot_id)
-    );
+    let _ = total_edits; // referenced via caveman path below
+    emit_rewrite_apply_output(&args, matches, &file_diffs, &edit_previews, snapshot_id)?;
     Ok(0)
+}
+
+/// Format-dispatch for `gw rewrite --apply` output. For caveman, prints the
+/// summary trailer to stdout (existing behavior). For compact/diff, prints
+/// the unified diff to stdout and the `applied (snapshot: ...)` trailer to
+/// stderr — keeping stdout pure so it can be piped into `delta` / `bat
+/// --diff` / `git apply` without contamination. For json, emits the full
+/// envelope (which already carries `applied`/`snapshot_id`).
+fn emit_rewrite_apply_output(
+    args: &RewriteArgs,
+    matches: &[grepwrite::locate::Match],
+    file_diffs: &[FileDiff],
+    edit_previews: &[EditPreview],
+    snapshot_id: Option<&str>,
+) -> Result<(), GwError> {
+    let total_edits = edit_previews.len();
+    match args.output {
+        RewriteOutputFormat::Caveman => {
+            print!(
+                "{}",
+                caveman::render_rewrite_applied(matches, total_edits, snapshot_id)
+            );
+        }
+        RewriteOutputFormat::Compact | RewriteOutputFormat::Diff => {
+            print!("{}", diff_out::render_rewrite(file_diffs));
+            match snapshot_id {
+                Some(id) => eprintln!("applied (snapshot: {id})"),
+                None => eprintln!("applied (no snapshot)"),
+            }
+        }
+        RewriteOutputFormat::Json => {
+            let engine = engine_label_for_rewrite(args);
+            print!(
+                "{}",
+                json_out::render_rewrite(matches, edit_previews, true, snapshot_id, engine)?
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Roll back a previously-recorded snapshot. With no `--snapshot` flag,

@@ -36,6 +36,10 @@ pub enum FindOutputFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RewriteOutputFormat {
+    /// For `gw find`: rg-style grouped output.
+    /// For `gw rewrite`: unified diff per file — aliased to `Diff` so both
+    /// produce the same output (so piping into `delta` / `bat --diff` works
+    /// regardless of which flag the user reaches for).
     Compact,
     /// LLM-token-minimal `path:line` per match. Name inspired by
     /// JuliusBrussee/caveman (the format itself is grepwrite-specific).
