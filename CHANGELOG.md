@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2026-05-31
+
+### Features
+
+- **output:** Add json and diff formats and wire all rewrite output paths
 ## [0.1.1] - 2026-05-31
 
 ### Features
