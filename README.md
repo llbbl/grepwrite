@@ -1,8 +1,12 @@
 # grepwrite
 
+[![crates.io](https://img.shields.io/crates/v/grepwrite.svg)](https://crates.io/crates/grepwrite)
+[![downloads](https://img.shields.io/crates/d/grepwrite.svg)](https://crates.io/crates/grepwrite)
+[![license](https://img.shields.io/crates/l/grepwrite.svg)](LICENSE)
+
 > Ripgrep-style search plus safe, transactional, AST-aware rewrites with built-in undo. Designed first for LLM coding agents, useful for humans.
 
-**Binary:** `gw` &nbsp;·&nbsp; **Status:** v0.1.x — `find` / `rewrite --apply` / `undo` / `snapshots` working end-to-end
+**Binary:** `gw` &nbsp;·&nbsp; **Install:** `cargo install grepwrite` &nbsp;·&nbsp; **Status:** v0.1.x — `find` / `rewrite --apply` / `undo` / `snapshots` working end-to-end
 
 `gw` is what `rg --replace` would be if it actually wrote files. It wraps [ripgrep](https://github.com/BurntSushi/ripgrep) (and optionally [ast-grep](https://ast-grep.github.io/)) for search, then owns the mutation path: dry-run by default, atomic per-file writes, and every `--apply` automatically snapshots to a git ref so `gw undo` restores the exact pre-edit state.
 
