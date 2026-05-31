@@ -8,7 +8,7 @@ mod snapshot;
 use cli::{Cli, Command, FindArgs, FindOutputFormat};
 use grepwrite::errors::GwError;
 use grepwrite::locate::{Locate, Query, rg::RgLocator};
-use grepwrite::output::caveman;
+use grepwrite::output::{caveman, compact};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -49,7 +49,9 @@ fn run_find(args: FindArgs) -> Result<i32, GwError> {
         FindOutputFormat::Caveman => {
             print!("{}", caveman::render_find(&matches));
         }
-        FindOutputFormat::Compact => return Err(GwError::NotImplemented("compact format")),
+        FindOutputFormat::Compact => {
+            print!("{}", compact::render_find(&matches));
+        }
         FindOutputFormat::Json => return Err(GwError::NotImplemented("json format")),
     }
 
