@@ -2,14 +2,12 @@ use clap::Parser;
 use std::process::ExitCode;
 
 mod cli;
-mod errors;
-mod locate;
 mod mutate;
 mod output;
 mod snapshot;
 
 use cli::{Cli, Command};
-use errors::GwError;
+use grepwrite::errors::GwError;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
