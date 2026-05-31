@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-05-31
+
+### Features
+
+- **locate:** Add ast-grep locator and --in <scope> dispatch
 ## [0.0.9] - 2026-05-31
 
 ### Features
