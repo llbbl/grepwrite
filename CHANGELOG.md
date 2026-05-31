@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.8] - 2026-05-31
+
+### Features
+
+- **mutate:** Wire gw rewrite --apply with snapshot-backed safe rewrites
 ## [0.0.7] - 2026-05-31
 
 ### Features
