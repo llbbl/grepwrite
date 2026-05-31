@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-05-31
+
+### Miscellaneous
+
+- **docker:** Add smoke testing environment and bump MSRV to 1.88
 ## [0.1.3] - 2026-05-31
 
 ### Features
