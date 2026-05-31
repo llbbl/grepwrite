@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.9] - 2026-05-31
+
+### Features
+
+- **cli:** Wire gw undo and gw snapshots dispatch
 ## [0.0.8] - 2026-05-31
 
 ### Features
