@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 mod cli;
 
-use cli::{Cli, Command, FindArgs, FindOutputFormat, RewriteArgs, RewriteOutputFormat};
+use cli::{Cli, Command, FindArgs, FindOutputFormat, RewriteArgs, RewriteOutputFormat, UndoArgs};
 use grepwrite::errors::GwError;
 use grepwrite::locate::{Locate, Query, rg::RgLocator};
 use grepwrite::mutate::{
@@ -31,8 +31,8 @@ fn dispatch(cli: Cli) -> Result<i32, GwError> {
     match cli.command {
         Command::Find(args) => run_find(args),
         Command::Rewrite(args) => run_rewrite(args),
-        Command::Undo(_) => Err(GwError::NotImplemented("gw undo")),
-        Command::Snapshots => Err(GwError::NotImplemented("gw snapshots")),
+        Command::Undo(args) => run_undo(args),
+        Command::Snapshots => run_snapshots(),
     }
 }
 
@@ -233,6 +233,65 @@ fn run_rewrite_apply(
         "{}",
         caveman::render_rewrite_applied(matches, total_edits, snapshot_id)
     );
+    Ok(0)
+}
+
+/// Roll back a previously-recorded snapshot. With no `--snapshot` flag,
+/// targets the most recent gw snapshot in the repo.
+fn run_undo(args: UndoArgs) -> Result<i32, GwError> {
+    let cwd = std::env::current_dir().map_err(|e| GwError::Engine(format!("cwd: {e}")))?;
+    let repo_root = snapshot::detect_repo_root(&cwd)?;
+
+    let identifier = match args.snapshot {
+        Some(s) => s,
+        None => {
+            let manifests = snapshot::list(&repo_root)?;
+            if manifests.is_empty() {
+                return Err(GwError::Snapshot("no snapshots to undo".to_string()));
+            }
+            manifests[0].id.clone()
+        }
+    };
+
+    let manifest = snapshot::undo(&repo_root, &identifier)?;
+    let n = manifest.paths.len();
+    match manifest.name {
+        Some(name) => println!("undone: {} '{}' ({} files restored)", manifest.id, name, n),
+        None => println!("undone: {} ({} files restored)", manifest.id, n),
+    }
+    Ok(0)
+}
+
+/// List all gw snapshots in the current repo, newest-first. Read-only.
+fn run_snapshots() -> Result<i32, GwError> {
+    let cwd = std::env::current_dir().map_err(|e| GwError::Engine(format!("cwd: {e}")))?;
+    let repo_root = snapshot::detect_repo_root(&cwd)?;
+    let manifests = snapshot::list(&repo_root)?;
+
+    if manifests.is_empty() {
+        println!("(no gw snapshots)");
+        return Ok(0);
+    }
+
+    // Determine width for the edits column so the name column lines up.
+    let max_edits_width = manifests
+        .iter()
+        .map(|m| m.edits_count.to_string().len())
+        .max()
+        .unwrap_or(1);
+
+    for m in &manifests {
+        let name = m.name.as_deref().unwrap_or("-");
+        // id is a fixed 26 chars (19 timestamp stem + dash + 6 short uuid).
+        println!(
+            "{:<26}  {}  {:>width$} edits  {}",
+            m.id,
+            m.created_at,
+            m.edits_count,
+            name,
+            width = max_edits_width
+        );
+    }
     Ok(0)
 }
 
