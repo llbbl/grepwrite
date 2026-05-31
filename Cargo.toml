@@ -1,0 +1,30 @@
+[package]
+name = "grepwrite"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+description = "Ripgrep-style search plus safe, transactional, AST-aware rewrites with built-in undo. Designed for LLM coding agents."
+license = "MIT"
+repository = "https://github.com/llbbl/grepwrite"
+authors = ["Logan Lindquist Land"]
+readme = "README.md"
+keywords = ["search", "replace", "ripgrep", "refactor", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "gw"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.27"
+similar = "2.6"
+anyhow = "1.0"
+thiserror = "2.0"
+uuid = { version = "1.23", features = ["v4"] }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"

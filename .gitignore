@@ -1,0 +1,26 @@
+# LLM stuff
+.claude/
+.cursor/
+.antigravitycli/
+.codex/
+CLAUDE.md
+AGENTS.md
+
+# Internal design docs
+_/
+
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+
+# Added by cargo
+
+/target
