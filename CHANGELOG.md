@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6] - 2026-05-31
+
+### Miscellaneous
+
+- Add OIDC-based crates.io publish workflow
 ## [0.1.5] - 2026-05-31
 
 ### Miscellaneous
